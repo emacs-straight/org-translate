@@ -2,7 +2,6 @@
 
 ;; Copyright (C) 2020  Free Software Foundation, Inc.
 
-;; Author: Eric Abrahamsen <eric@ericabrahamsen.net>
 ;; Version: 0
 ;; Package-Requires: ((emacs "25.1") (org "9.1"))
 
@@ -78,6 +77,7 @@
 ;;; Code:
 
 (require 'bookmark)
+(require 'ox)
 
 (defgroup org-translate nil
   "Customizations for the org-translate library."
@@ -485,52 +485,55 @@ segmentation in the translation is all manual.
 
 Segmentation is done by inserting `ogt-segmentation-character' at
 the beginning of each segment."
-  (save-excursion
-    (ogt-goto-heading 'source)
-    (save-restriction
-      (org-narrow-to-subtree)
-      (org-end-of-meta-data t)
-      (let ((mover
-	     ;; These "movers" should all leave point at the beginning
-	     ;; of the _next_ thing.
-	     (pcase ogt-segmentation-strategy
-	       ('sentence
-		(lambda (_end)
-		  (forward-sentence)
-		  (skip-chars-forward "[:blank:]")))
-	       ('paragraph (lambda (_end)
-			     (org-forward-paragraph)))
-	       ((pred stringp)
-		(lambda (end)
-		  (re-search-forward
-		   ogt-segmentation-strategy end t)))
-	       (_ (user-error
-		   "Invalid value of `ogt-segmentation-strategy'"))))
-	    (end (make-marker))
-	    current)
-	(while (< (point) (point-max))
-	  (insert ogt-segmentation-character)
-	  (setq current (org-element-at-point))
-	  (move-marker end (org-element-property :contents-end current))
-	  ;; TODO: Do segmentation in plain lists and tables.
-	  (while (and (< (point) end)
-		      ;; END can be after `point-max' in narrowed
-		      ;; buffer.
-		      (< (point) (point-max)))
-	    (cond
-	     ((eql (org-element-type current) 'headline)
-	      (skip-chars-forward "[:blank:]\\*")
-	      (insert ogt-segmentation-character)
-	      (org-end-of-meta-data t))
-	     ((null (eql (org-element-type current)
-			 'paragraph))
-	      (goto-char end))
-	     (t (ignore-errors (funcall mover end))))
-	    (if (eolp) ;; No good if sentence happens to end at `eol'!
-		(goto-char end)
-	      (insert ogt-segmentation-character)))
-	  (unless (ignore-errors (org-forward-element))
-	    (goto-char (point-max))))))))
+  (dolist (loc '(source translation))
+    ;; Also attempt to segment the translation subtree -- the user
+    ;; might have already started.
+    (save-excursion
+      (ogt-goto-heading loc)
+      (save-restriction
+	(org-narrow-to-subtree)
+	(org-end-of-meta-data t)
+	(let ((mover
+	       ;; These "movers" should all leave point at the beginning
+	       ;; of the _next_ thing.
+	       (pcase ogt-segmentation-strategy
+		 ('sentence
+		  (lambda (_end)
+		    (forward-sentence)
+		    (skip-chars-forward "[:blank:]")))
+		 ('paragraph (lambda (_end)
+			       (org-forward-paragraph)))
+		 ((pred stringp)
+		  (lambda (end)
+		    (re-search-forward
+		     ogt-segmentation-strategy end t)))
+		 (_ (user-error
+		     "Invalid value of `ogt-segmentation-strategy'"))))
+	      (end (make-marker))
+	      current)
+	  (while (< (point) (point-max))
+	    (insert ogt-segmentation-character)
+	    (setq current (org-element-at-point))
+	    (move-marker end (org-element-property :contents-end current))
+	    ;; TODO: Do segmentation in plain lists and tables.
+	    (while (and (< (point) end)
+			;; END can be after `point-max' in narrowed
+			;; buffer.
+			(< (point) (point-max)))
+	      (cond
+	       ((eql (org-element-type current) 'headline)
+		(skip-chars-forward "[:blank:]\\*")
+		(insert ogt-segmentation-character)
+		(org-end-of-meta-data t))
+	       ((null (eql (org-element-type current)
+			   'paragraph))
+		(goto-char end))
+	       (t (ignore-errors (funcall mover end))))
+	      (if (eolp) ;; No good if sentence happens to end at `eol'!
+		  (goto-char end)
+		(insert ogt-segmentation-character)))
+	    (unless (ignore-errors (org-forward-element))
+	      (goto-char (point-max)))))))))
 
 ;; Could also set this as `forward-sexp-function', then don't need the
 ;; backward version.
