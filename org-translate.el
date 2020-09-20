@@ -28,32 +28,87 @@
 ;; It is not a full-fledged CAT tool.  It essentially does two things:
 ;; manages segmentation correspondences between the source text and
 ;; the translation, and manages a glossary which can be used for
-;; automatic translation, displaying previous usages, etc.
+;; automatic term translation, displaying previous usages, etc.
 
-;; Currently assumes a single file holding a single translation
-;; project, with three separate headings for source text, translation,
-;; and glossary (other headings will be ignored).  Each translation
-;; project has five local settings, each of which also has a global
-;; default value.  The first three settings are used to locate the org
-;; subtrees representing source text, translation text, and glossary.
-;; The fourth setting defines the segmentation strategy: the source
-;; text can be segmented by sentence, paragraph, or regular
-;; expression.  The fifth setting determines the character to be used
-;; to delimit segments.
+;; Buffer setup:
 
-;; While translating, use "C-M-n" to start a new segment in the
-;; translation text.  "C-M-b" and "C-M-f" will move forward and back
-;; between segments, maintaining the correspondence with the source
-;; text.  If the source text highlighting gets "lost", reset it with
-;; "C-M-t".  To add a new glossary item, move to the source window,
-;; put the region on the new item, and use M-x ogt-add-glossary-item.
-;; In the translation text, add a translation of the next glossary
-;; item with "C-M-y".
+;; The mode currently assumes a single file holding a single
+;; translation project, with three separate top-level headings for
+;; source text, translation, and glossary (other headings will be
+;; ignored).  The three customization options
+;; `ogt-default-source-locator', `ogt-default-translation-locator' and
+;; `ogt-default-glossary-locator' can be used to tell the mode which
+;; heading is which; by default it expects a buffer that looks like
+;; this:
 
-;; Translation projects can optionally be defined and configured in
-;; the option `ogt-translation-projects' (see docstring for details)
-;; though this is only useful if you're working on multiple projects
-;; with different settings.
+;; * Le Rouge et le Noir                                     :source:
+;;   La petite ville de Verrières peut passer pour...
+
+;; * The Red and the Black                              :translation:
+;;   The small town of Verrieres may be regarded...
+
+;; * Glossary
+;; ** ville de Verrières
+
+;; In other words, tags are used to find the source and translation
+;; texts, while the glossary heading is just called "Glossary".  This
+;; is also configurable on a per-project basis, using the
+;; `ogt-translation-projects' option.
+
+;; Segmentation
+
+;; The first time you start this mode in a new translation project
+;; buffer (after first setting up the three headings appropriately),
+;; the mode will detect that the project has not yet been segmented,
+;; and will offer to do so.  Segmentation involves inserting the value
+;; of `ogt-segmentation-character' at intervals in the source text.
+;; As you progress through the translation, you'll insert that same
+;; character at corresponding places in the translation text, allowing
+;; the minor mode to keep track of which segment corresponds to which,
+;; and to keep the display of source and translation synchronized.
+
+;; The option `ogt-segmentation-strategy' determines how the source
+;; text is segmented.  Currently the options are to segment by
+;; sentence, by paragraph, or by regular expression.  Note that, after
+;; initial segmentation, the minor mode will leave the segmentation
+;; characters alone, and you're free to insert, delete or move them as
+;; needed.
+
+;; As you reach the end of each translation segment, use "C-M-n"
+;; (`ogt-new-segment') to insert a segmentation character and start a
+;; new segment.  The character should be inserted at the _beginning_
+;; of the new segment, not at the end of the last -- eg at the start
+;; of a paragraph or sentence.
+
+;; Use "C-M-f" and "C-M-b" to move forward and backward in the
+;; translation text by segment.  This will allow the minor mode to
+;; keep the corresponding source segment in view.  Alternately, move
+;; point however you like in the translation text, then use "C-M-t" to
+;; update the source view.
+
+;; The glossary
+
+;; This mode also maintains a glossary of translation terms for the
+;; current project.  Currently it does this by keeping each term as a
+;; subheading under the top-level glossary heading.  Each subheading
+;; has an ID property, and this property is used to create links in
+;; the source and translation text, pointing to the glossary item in
+;; question.  The mode keeps tracks of the various ways you've
+;; translated a term previously, and offers these for completion on
+;; inserting a new translation.
+
+;; To create a new glossary term, use "C-M-y".  If you've marked text
+;; in the source buffer, this will become the new term, otherwise
+;; you'll be prompted to enter the string.  This command will attempt
+;; to turn all instances of this term in the source text into a link.
+
+;; In the translation text, use "C-M-;"
+;; (`ogt-insert-glossary-translation') to add a translation.  The mode
+;; will attempt to guess which term you're adding, and suggest
+;; previous translations for that term.  If you don't want it to
+;; guess, use a prefix argument to be prompted.
+
+;; Bookmarks
 
 ;; The functions `ogt-start-translating' and `ogt-stop-translating'
 ;; can be used to start and stop a translation session.  The first use
@@ -69,6 +124,9 @@
 ;; - Import/export TMX translation databases.
 ;; - Provide for other glossary backends: eieio-persistent, xml,
 ;;   sqlite, etc.
+;; - Do this by allowing the glossary locator to point at a named Org
+;;   table, or at a babel source block, allowing users to maintain
+;;   the glossary outside of Org altogether.
 ;; - Provide integration with `org-clock': set a custom property on a
 ;;   TODO heading indicating that it represents a translation project.
 ;;   Clocking in both starts the clock, and sets up the translation
@@ -78,6 +136,7 @@
 
 (require 'bookmark)
 (require 'ox)
+(require 'org-id)
 
 (defgroup org-translate nil
   "Customizations for the org-translate library."
@@ -231,10 +290,16 @@ fragilely, and deleted and re-set with abandon.")
 (defvar-local ogt-source-segment-overlay nil
   "Overlay on the current source segment.")
 
+(defvar ogt-link-keymap
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "o") #'ogt-term-occur)
+    map)
+  "Keymap active on \"trans:\" type Org links.")
+
 (org-link-set-parameters
  "trans"
  :follow #'ogt-follow-link
- ;; Give it a :keymap!  Very nice.
+ :keymap ogt-link-keymap
  :export #'ogt-export-link)
 
 (defun ogt-follow-link (link)
@@ -251,11 +316,14 @@ By default, just remove it."
     (define-key map (kbd "C-M-b") #'ogt-backward-segment)
     (define-key map (kbd "C-M-n") #'ogt-new-segment)
     (define-key map (kbd "C-M-t") #'ogt-update-source-location)
-    (define-key map (kbd "C-M-y") #'ogt-insert-glossary-translation)
+    (define-key map (kbd "C-M-y") #'ogt-new-glossary-term)
+    (define-key map (kbd "C-M-;") #'ogt-insert-glossary-translation)
     map))
 
 (define-minor-mode org-translate-mode
-  "Minor mode for using an Org file as a translation project."
+  "Minor mode for using an Org file as a translation project.
+
+\\{org-translate-mode-map}"
   nil " Translate" nil
   (if (null org-translate-mode)
       (progn
@@ -279,22 +347,24 @@ By default, just remove it."
 				  ogt-translation-projects)))))
 	   (this-plist (when this-project
 			 (alist-get this-project ogt-translation-projects))))
-      (setq ogt-source-heading (or (plist-get this-plist :source)
-				   (ogt-locate-heading
-				    ogt-default-source-locator))
-	    ogt-translation-heading (or (plist-get this-plist :translation)
-					(ogt-locate-heading
-					 ogt-default-translation-locator))
-	    ogt-glossary-heading (or (plist-get this-plist :glossary)
-				     (ogt-locate-heading
-				      ogt-default-glossary-locator))
-	    ogt-segmentation-strategy (or (plist-get this-plist :seg-strategy)
-					  ogt-default-segmentation-strategy)
-	    ogt-segmentation-character (or (plist-get this-plist :seg-character)
-					   ogt-default-segmentation-character)
-	    ogt-glossary-table (make-hash-table :size 500 :test #'equal)
-	    ogt-probable-source-location (make-marker)
-	    ogt-source-segment-overlay (make-overlay (point) (point)))
+      (condition-case nil
+	  (setq ogt-source-heading (or (plist-get this-plist :source)
+				       (ogt-locate-heading
+					ogt-default-source-locator))
+		ogt-translation-heading (or (plist-get this-plist :translation)
+					    (ogt-locate-heading
+					     ogt-default-translation-locator))
+		ogt-glossary-heading (or (plist-get this-plist :glossary)
+					 (ogt-locate-heading
+					  ogt-default-glossary-locator))
+		ogt-segmentation-strategy (or (plist-get this-plist :seg-strategy)
+					      ogt-default-segmentation-strategy)
+		ogt-segmentation-character (or (plist-get this-plist :seg-character)
+					       ogt-default-segmentation-character)
+		ogt-glossary-table (make-hash-table :size 500 :test #'equal)
+		ogt-probable-source-location (make-marker)
+		ogt-source-segment-overlay (make-overlay (point) (point)))
+	(error (org-translate-mode -1)))
       (push #'ogt-export-remove-segmenters org-export-filter-body-functions)
       (overlay-put ogt-source-segment-overlay
 		   'face 'highlight)
@@ -344,6 +414,16 @@ By default, just remove it."
   ;; Is `org-export-filter-body-functions' the right filter to use?
   (replace-regexp-in-string
    (string ogt-segmentation-character) "" body-string))
+
+(defun ogt-term-occur ()
+  "Run `occur' for the glossary term at point.
+Available on \"trans:\" type links that represent glossary
+terms."
+  (interactive)
+  (let ((id (org-element-property :path (org-element-context))))
+    ;; I thought I should use `org-occur', but that only seems to work
+    ;; correctly in the sparse tree context.
+    (occur (concat "trans:" id))))
 
 (defun ogt-prettify-segmenters (&optional begin end)
   "Add a display face to all segmentation characters.
@@ -432,7 +512,8 @@ and applies a highlight to the appropriate segment of text."
 	 (re-search-backward
 	  (string ogt-segmentation-character)
 	  nil t)
-	 (1+ (point)))
+	 (forward-char)
+	 (point))
        (progn
 	 (or (and (re-search-forward
 		   (string ogt-segmentation-character)
@@ -452,22 +533,26 @@ and applies a highlight to the appropriate segment of text."
 Creates an ID if necessary."
   (save-excursion
     (goto-char (point-min))
-    (pcase locator
-      (`(heading . ,text)
-       (catch 'found
-	 (while (re-search-forward org-complex-heading-regexp nil t)
-	   (when (string-match-p text (match-string 4))
-	     (throw 'found (org-id-get-create))))))
-      (`(tag . ,tag-text)
-       (catch 'found
-	 (while (re-search-forward org-tag-line-re nil t)
-	   (when (string-match-p tag-text (match-string 2))
-	     (throw 'found (org-id-get-create))))))
-      (`(id . ,id-text)
-       (org-id-goto id-text))
-      (`(property (,prop . ,value))
-       (goto-char (org-find-property prop value))
-       (org-id-get-create)))))
+    (let ((id (pcase locator
+		(`(heading . ,text)
+		 (catch 'found
+		   (while (re-search-forward
+			   org-complex-heading-regexp nil t)
+		     (when (string-match-p text (match-string 4))
+		       (throw 'found (org-id-get-create))))))
+		(`(tag . ,tag-text)
+		 (catch 'found
+		   (while (re-search-forward org-tag-line-re nil t)
+		     (when (string-match-p tag-text (match-string 2))
+		       (throw 'found (org-id-get-create))))))
+		(`(id . ,id-text)
+		 (org-id-goto id-text)
+		 id-text)
+		(`(property (,prop . ,value))
+		 (goto-char (org-find-property prop value))
+		 (org-id-get-create)))))
+      (or id
+	  (error "Locator failed: %s" locator)))))
 
 (defun ogt-goto-heading (head)
   (let ((id (pcase head
@@ -576,7 +661,7 @@ the next one."
 	(recenter 10))
     (ogt-update-source-location)))
 
-(defun ogt-add-glossary-item (string)
+(defun ogt-new-glossary-term (string)
   "Add STRING as an item in the glossary.
 If the region is active, it will be used as STRING.  Otherwise,
 prompt the user for STRING."
@@ -588,46 +673,74 @@ prompt the user for STRING."
 	   (read-string "Glossary term: "))))
   (save-excursion
     (ogt-goto-heading 'glossary)
-    (org-goto-first-child)
-    (org-insert-heading-respect-content)
+    (if (org-goto-first-child)
+	(org-insert-heading-respect-content)
+      (end-of-line)
+      (org-insert-subheading 1))
     (insert string)
-    (let ((id (org-id-get-create)))
+    (let ((id (org-id-get-create))
+	  ;; STRING might be broken across lines.  What do we do about
+	  ;; Chinese, with no word separators?
+	  (doctored (replace-regexp-in-string
+		     "[[:blank:]]+" "[[:space:]\n]+"
+		     string)))
       (ogt-goto-heading 'source)
       (save-restriction
 	(org-narrow-to-subtree)
-	;; TODO: `string' highly likely to be broken over newlines.
-	(while (re-search-forward string nil t)
+	(while (re-search-forward doctored nil t)
 	  (replace-match (format "[[trans:%s][%s]]" id string))))
       (push string (alist-get 'source (gethash id ogt-glossary-table)))))
-  (message "Added %s as a glossary item" string))
+  (message "Added %s as a glossary term" string))
 
-(defun ogt-insert-glossary-translation ()
-  "Insert a likely translation of the next glossary item."
-  (interactive)
-  (let ((terms-this-segment 1)
-	glossary-id glossary-translation orig this-translation)
+(defun ogt-insert-glossary-translation (prompt)
+  "Insert a likely translation of the next glossary term.
+Guesses the glossary term to insert based on how many terms have
+already been translated in this segment.  Alternately, give a
+prefix arg to be prompted for the term to enter."
+  (interactive "P")
+  (let* ((orig (when prompt
+		 (completing-read
+		  "Add translation of: "
+		  (mapcan (lambda (v)
+			    (copy-sequence (alist-get 'source v)))
+			  (hash-table-values ogt-glossary-table))
+		  nil t)))
+	 (glossary-id (when orig
+			(catch 'found
+			  (maphash
+			   (lambda (k v)
+			     (when (member orig (alist-get 'source v))
+			       (throw 'found k)))
+			   ogt-glossary-table))))
+	 glossary-translation this-translation)
     (ogt-update-source-location)
-    (save-excursion
-      (while (re-search-backward "\\[\\[trans:"
-				 (save-excursion
-				   (re-search-backward
-				    (string ogt-segmentation-character) nil t)
-				   (point))
-				 t)
-	(cl-incf terms-this-segment))
-      (with-selected-window ogt-source-window
-	(goto-char ogt-probable-source-location)
-	(while (null (zerop terms-this-segment))
-	  (re-search-forward org-link-any-re nil t)
-	  (when (string-prefix-p "trans:" (match-string 2))
-	    (cl-decf terms-this-segment)))
-	(setq orig (match-string-no-properties 3)
-	      glossary-id (string-remove-prefix
-			   "trans:" (match-string 2))
-	      glossary-translation
-	      (alist-get 'translation
-			 (gethash glossary-id ogt-glossary-table)))))
-    (setq this-translation
+    ;; If we didn't prompt, attempt to guess which glossary term
+    ;; should be translated next by counting how many we've already
+    ;; done this segment.
+    (unless (and orig glossary-id)
+      (let ((terms-this-segment 1))
+	(save-excursion
+	  (while (re-search-backward
+		  "\\[\\[trans:"
+		  (save-excursion
+		    (re-search-backward
+		     (string ogt-segmentation-character) nil t)
+		    (point))
+		  t)
+	    (cl-incf terms-this-segment)))
+	(with-selected-window ogt-source-window
+	  (goto-char ogt-probable-source-location)
+	  (while (null (zerop terms-this-segment))
+	    (re-search-forward org-link-any-re nil t)
+	    (when (string-prefix-p "trans:" (match-string 2))
+	      (cl-decf terms-this-segment)))
+	  (setq orig (match-string-no-properties 3)
+		glossary-id (string-remove-prefix
+			     "trans:" (match-string 2))))))
+    (setq glossary-translation
+	  (alist-get 'translation
+		     (gethash glossary-id ogt-glossary-table))
+	  this-translation
 	  (completing-read (format "Translation of %s: " orig)
 			   glossary-translation))
     (cl-pushnew
