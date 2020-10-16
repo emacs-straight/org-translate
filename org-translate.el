@@ -2,7 +2,7 @@
 
 ;; Copyright (C) 2020  Free Software Foundation, Inc.
 
-;; Version: 0.1.1
+;; Version: 0.1.2
 ;; Package-Requires: ((emacs "25.1") (org "9.1"))
 
 ;; Author: Eric Abrahamsen <eric@ericabrahamsen.net>
@@ -293,17 +293,15 @@ fragilely, and deleted and re-set with abandon.")
 (defvar ogt-link-keymap
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "o") #'ogt-term-occur)
+    (define-key map (kbd "d") #'ogt-term-display-translations)
     map)
   "Keymap active on \"trans:\" type Org links.")
 
 (org-link-set-parameters
  "trans"
- :follow #'ogt-follow-link
+ :follow #'org-id-open
  :keymap ogt-link-keymap
  :export #'ogt-export-link)
-
-(defun ogt-follow-link (link arg)
-  (org-id-open link arg))
 
 (defun ogt-export-link (_path desc _backend)
   "Export a translation link.
@@ -332,9 +330,10 @@ By default, just remove it."
 	      ogt-glossary-heading nil
 	      ogt-segmentation-strategy nil
 	      ogt-segmentation-character nil
-	      ogt-glossary-table nil)
-	(move-marker ogt-probable-source-location nil)
-	(delete-overlay ogt-source-segment-overlay))
+	      ogt-glossary-table nil
+	      ogt-probable-source-location nil)
+	(when (overlayp ogt-source-segment-overlay)
+	  (delete-overlay ogt-source-segment-overlay)))
     (unless (derived-mode-p 'org-mode)
       (user-error "Only applicable in Org files."))
     (let* ((this-project (or ogt-this-project-name
@@ -347,7 +346,7 @@ By default, just remove it."
 				  ogt-translation-projects)))))
 	   (this-plist (when this-project
 			 (alist-get this-project ogt-translation-projects))))
-      (condition-case nil
+      (condition-case err
 	  (setq ogt-source-heading (or (plist-get this-plist :source)
 				       (ogt-locate-heading
 					ogt-default-source-locator))
@@ -364,7 +363,8 @@ By default, just remove it."
 		ogt-glossary-table (make-hash-table :size 500 :test #'equal)
 		ogt-probable-source-location (make-marker)
 		ogt-source-segment-overlay (make-overlay (point) (point)))
-	(error (org-translate-mode -1)))
+	(error (org-translate-mode -1)
+	       (signal (car err) (cdr err))))
       (push #'ogt-export-remove-segmenters org-export-filter-body-functions)
       (overlay-put ogt-source-segment-overlay
 		   'face 'highlight)
@@ -424,6 +424,19 @@ terms."
     ;; I thought I should use `org-occur', but that only seems to work
     ;; correctly in the sparse tree context.
     (occur (concat "trans:" id))))
+
+(defun ogt-term-display-translations ()
+  "Display original and translations for link under point."
+  (interactive)
+  (let ((bits (gethash
+	       (org-element-property :path (org-element-context))
+	       ogt-glossary-table)))
+    (message
+     (format
+      (concat
+       (mapconcat #'identity (alist-get 'source bits) ", ")
+       " : "
+       (mapconcat #'identity (alist-get 'translation bits) ", "))))))
 
 (defun ogt-prettify-segmenters (&optional begin end)
   "Add a display face to all segmentation characters.
@@ -597,8 +610,9 @@ the beginning of each segment."
 	      (end (make-marker))
 	      current)
 	  (while (< (point) (point-max))
-	    (insert ogt-segmentation-character)
 	    (setq current (org-element-at-point))
+	    (unless (eql (org-element-type current) 'headline)
+	      (insert ogt-segmentation-character))
 	    (move-marker end (org-element-property :contents-end current))
 	    ;; TODO: Do segmentation in plain lists and tables.
 	    (while (and (< (point) end)
@@ -609,7 +623,8 @@ the beginning of each segment."
 	       ((eql (org-element-type current) 'headline)
 		(skip-chars-forward "[:blank:]\\*")
 		(insert ogt-segmentation-character)
-		(org-end-of-meta-data t))
+		(org-end-of-meta-data t)
+		(move-marker end (point)))
 	       ((null (eql (org-element-type current)
 			   'paragraph))
 		(goto-char end))
