@@ -2,7 +2,7 @@
 
 ;; Copyright (C) 2020  Free Software Foundation, Inc.
 
-;; Version: 0.1.2
+;; Version: 0.1.3
 ;; Package-Requires: ((emacs "25.1") (org "9.1"))
 
 ;; Author: Eric Abrahamsen <eric@ericabrahamsen.net>
@@ -529,9 +529,10 @@ and applies a highlight to the appropriate segment of text."
 	 (point))
        (progn
 	 (or (and (re-search-forward
-		   (regexp-opt (string ogt-segmentation-character)
-			       "\n\n"
-			       org-heading-regexp)
+		   (regexp-opt
+		    (list (string ogt-segmentation-character)
+			  "\n\n"
+			  org-heading-regexp))
 		   nil t)
 		  (progn
 		    (backward-char)
